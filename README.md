@@ -148,22 +148,3 @@ transcript
 *.swp
 .DS_Store
 EOF
-
-git init
-git add .
-git commit -m "Initial commit: SystemVerilog FIFO verification environment"
-
-echo ""
-echo "============================================"
-echo " FIFO VERIFICATION REPOSITORY CREATED"
-echo "============================================"
-echo ""
-echo "Repository: sync-fifo-systemverilog"
-echo ""
-echo "Files created:"
-find . -type f | sort
-echo ""
-echo "To connect GitHub:"
-echo "git branch -M main"
-echo "git remote add origin <YOUR_GITHUB_REPOSITORY_URL>"
-echo "git push -u origin main"
