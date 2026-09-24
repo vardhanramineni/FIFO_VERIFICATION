@@ -1,271 +1,14 @@
-mkdir -p sync-fifo-systemverilog-verification/{tb,sim} && cd sync-fifo-systemverilog-verification
-
-cat > tb/fifo_interface.sv <<'EOF'
-interface fifo_interface(input logic clk);
-
-    logic       rst;
-    logic       wr_en;
-    logic       rd_en;
-    logic [7:0] din;
-    logic [7:0] dout;
-    logic       full;
-    logic       empty;
-
-endinterface
-EOF
-
-cat > tb/transaction.sv <<'EOF'
-class transaction;
-
-    rand bit       wr_en;
-    rand bit       rd_en;
-    rand bit [7:0] data_in;
-
-    bit [7:0] data_out;
-    bit       full;
-    bit       empty;
-
-    constraint operation_c {
-        wr_en dist {1 := 70, 0 := 30};
-        rd_en dist {1 := 70, 0 := 30};
-    }
-
-    function void display(string name);
-        $display("[%s] wr_en=%0d rd_en=%0d data_in=%0h data_out=%0h full=%0d empty=%0d",
-                 name, wr_en, rd_en, data_in, data_out, full, empty);
-    endfunction
-
-endclass
-EOF
-
-cat > tb/generator.sv <<'EOF'
-class generator;
-
-    mailbox #(transaction) gen2drv;
-    transaction tr;
-
-    function new(mailbox #(transaction) gen2drv);
-        this.gen2drv = gen2drv;
-    endfunction
-
-    task run();
-
-        repeat (200) begin
-
-            tr = new();
-
-            assert(tr.randomize())
-                else $fatal("Transaction randomization failed");
-
-            gen2drv.put(tr);
-
-        end
-
-    endtask
-
-endclass
-EOF
-
-cat > tb/driver.sv <<'EOF'
-class driver;
-
-    virtual fifo_interface vif;
-    mailbox #(transaction) gen2drv;
-
-    function new(
-        virtual fifo_interface vif,
-        mailbox #(transaction) gen2drv
-    );
-
-        this.vif = vif;
-        this.gen2drv = gen2drv;
-
-    endfunction
-
-    task run();
-
-        transaction tr;
-
-        forever begin
-
-            gen2drv.get(tr);
-
-            @(posedge vif.clk);
-
-            vif.wr_en <= tr.wr_en;
-            vif.rd_en <= tr.rd_en;
-            vif.din   <= tr.data_in;
-
-        end
-
-    endtask
-
-endclass
-EOF
-
-cat > tb/monitor.sv <<'EOF'
-class monitor;
-
-    virtual fifo_interface vif;
-    mailbox #(transaction) mon2scb;
-
-    function new(
-        virtual fifo_interface vif,
-        mailbox #(transaction) mon2scb
-    );
-
-        this.vif = vif;
-        this.mon2scb = mon2scb;
-
-    endfunction
-
-    task run();
-
-        transaction tr;
-
-        forever begin
-
-            @(posedge vif.clk);
-
-            tr = new();
-
-            tr.wr_en    = vif.wr_en;
-            tr.rd_en    = vif.rd_en;
-            tr.data_in  = vif.din;
-            tr.data_out = vif.dout;
-            tr.full     = vif.full;
-            tr.empty    = vif.empty;
-
-            mon2scb.put(tr);
-
-        end
-
-    endtask
-
-endclass
-EOF
-
-cat > tb/scoreboard.sv <<'EOF'
-class scoreboard;
-
-    mailbox #(transaction) mon2scb;
-    transaction tr;
-
-    bit [7:0] reference_queue[$];
-
-    int pass_count = 0;
-    int fail_count = 0;
-
-    function new(mailbox #(transaction) mon2scb);
-        this.mon2scb = mon2scb;
-    endfunction
-
-    task run();
-
-        bit [7:0] expected_data;
-
-        forever begin
-
-            mon2scb.get(tr);
-
-            if (tr.wr_en && !tr.full) begin
-                reference_queue.push_back(tr.data_in);
-            end
-
-            if (tr.rd_en && !tr.empty) begin
-
-                if (reference_queue.size() == 0) begin
-                    $error("[SCOREBOARD] Reference queue is empty");
-                    fail_count++;
-                end
-
-                else begin
-
-                    expected_data = reference_queue.pop_front();
-
-                    if (tr.data_out === expected_data) begin
-                        pass_count++;
-
-                        $display("[SCOREBOARD] PASS : Expected=%0h Actual=%0h",
-                                 expected_data, tr.data_out);
-                    end
-
-                    else begin
-                        fail_count++;
-
-                        $error("[SCOREBOARD] FAIL : Expected=%0h Actual=%0h",
-                               expected_data, tr.data_out);
-                    end
-
-                end
-
-            end
-
-        end
-
-    endtask
-
-endclass
-EOF
-
-cat > tb/environment.sv <<'EOF'
-class environment;
-
-    generator  gen;
-    driver     drv;
-    monitor    mon;
-    scoreboard scb;
-
-    mailbox #(transaction) gen2drv;
-    mailbox #(transaction) mon2scb;
-
-    virtual fifo_interface vif;
-
-    function new(virtual fifo_interface vif);
-
-        this.vif = vif;
-
-        gen2drv = new();
-        mon2scb = new();
-
-        gen = new(gen2drv);
-        drv = new(vif, gen2drv);
-        mon = new(vif, mon2scb);
-        scb = new(mon2scb);
-
-    endfunction
-
-    task run();
-
-        fork
-            gen.run();
-            drv.run();
-            mon.run();
-            scb.run();
-        join_none
-
-    endtask
-
-endclass
-EOF
-
-cat > README.md <<'EOF'
 # Synchronous FIFO Verification using SystemVerilog
 
 ## Overview
 
-This repository contains a SystemVerilog-based verification
-environment developed for functional verification of a
-synchronous FIFO.
+This repository contains a SystemVerilog-based verification environment developed for functional verification of a synchronous FIFO.
 
-The verification environment follows a UVM-style architecture
-without using the UVM library.
+The verification environment follows a UVM-style architecture without using the UVM library.
 
-The FIFO RTL/DUT source code is intentionally not included in
-this repository.
+The FIFO RTL/DUT source code is intentionally not included in this repository.
 
-The verification environment was developed and tested using
-Xilinx Vivado 2023.2.
+The verification environment was developed and tested using **Xilinx Vivado 2023.2**.
 
 ## Verification Result
 
@@ -312,3 +55,559 @@ Xilinx Vivado 2023.2.
                     | Reference      |
                     | Model / Queue  |
                     +----------------+
+
+```
+
+---
+
+## Components
+
+### 1. Transaction
+
+The transaction represents one FIFO operation.
+
+It contains:
+
+```text
+wr_en
+rd_en
+data_in
+data_out
+full
+empty
+```
+
+The transaction object is used to transfer FIFO operations between the verification components.
+
+The input fields are randomized by the generator, while the output and status fields are populated by the monitor.
+
+---
+
+## 2. Generator
+
+The generator creates constrained-random FIFO transactions.
+
+Its responsibilities are:
+
+- Create transaction objects
+- Randomize FIFO operations
+- Generate random input data
+- Send transactions to the driver
+- Generate 200 test transactions
+
+Communication:
+
+```text
+Generator
+    |
+    | gen2drv mailbox
+    v
+Driver
+```
+
+---
+
+## 3. Constraints
+
+Constrained randomization is used to generate different combinations of FIFO operations.
+
+The transaction contains constraints on the write and read enables:
+
+```text
+wr_en dist {1 := 70, 0 := 30};
+rd_en dist {1 := 70, 0 := 30};
+```
+
+This gives a higher probability of generating active write and read operations while still allowing inactive operations.
+
+### Constraint Purpose
+
+The constraints help generate a variety of FIFO scenarios:
+
+- Write only
+- Read only
+- Simultaneous read and write
+- No operation
+- Consecutive writes
+- Consecutive reads
+- Random data transfers
+
+The generator performs randomization using:
+
+```text
+tr.randomize()
+```
+
+If randomization fails, the simulation is terminated using a fatal error.
+
+The use of constrained randomization reduces the need to manually write individual test cases for every possible combination of FIFO operations.
+
+---
+
+## 4. Driver
+
+The driver converts the transaction-level stimulus generated by the generator into signal-level inputs for the FIFO DUT.
+
+The driver drives:
+
+```text
+wr_en
+rd_en
+din
+```
+
+through the virtual interface.
+
+```text
+Transaction
+     |
+     v
+  Driver
+     |
+     v
+Virtual Interface
+     |
+     v
+FIFO DUT
+```
+
+The driver synchronizes the stimulus with the FIFO clock.
+
+The driver does not perform functional checking. Its responsibility is to apply the generated stimulus to the DUT.
+
+---
+
+## 5. Monitor
+
+The monitor is a passive verification component.
+
+It observes the FIFO interface and captures:
+
+```text
+wr_en
+rd_en
+din
+dout
+full
+empty
+```
+
+The observed signals are converted into a transaction object.
+
+The transaction is then sent to the scoreboard through the `mon2scb` mailbox.
+
+```text
+FIFO DUT
+   |
+   v
+Monitor
+   |
+   | mon2scb mailbox
+   v
+Scoreboard
+```
+
+The monitor does not drive any DUT signals.
+
+---
+
+## 6. Scoreboard
+
+The scoreboard is responsible for functional checking of the FIFO.
+
+It compares the actual FIFO output from the DUT against the expected output generated by the reference model.
+
+The scoreboard uses a SystemVerilog queue as the reference model:
+
+```text
+reference_queue[$]
+```
+
+### Scoreboard Logic
+
+The scoreboard receives transactions from the monitor through the `mon2scb` mailbox.
+
+For every observed transaction, it first checks whether a valid write operation occurred.
+
+```text
+if (wr_en && !full)
+```
+
+If the condition is true, the input data is added to the reference queue:
+
+```text
+reference_queue.push_back(data_in);
+```
+
+This represents the data being successfully written into the expected FIFO.
+
+For a valid read operation:
+
+```text
+if (rd_en && !empty)
+```
+
+the scoreboard removes the oldest value from the reference queue:
+
+```text
+expected_data = reference_queue.pop_front();
+```
+
+This follows the FIFO principle:
+
+```text
+First data written
+        |
+        v
+First data expected to be read
+```
+
+The expected value is then compared with the actual DUT output:
+
+```text
+expected_data == data_out
+```
+
+### Scoreboard Decision Flow
+
+```text
+              Monitor Transaction
+                       |
+                       v
+              +------------------+
+              | Valid Write?     |
+              | wr_en && !full   |
+              +------------------+
+                       |
+                      Yes
+                       |
+                       v
+              push_back(data_in)
+                       |
+                       v
+              Reference Queue
+                       |
+                       |
+                       v
+              +------------------+
+              | Valid Read?      |
+              | rd_en && !empty  |
+              +------------------+
+                       |
+                      Yes
+                       |
+                       v
+              pop_front()
+                       |
+                       v
+              Expected Data
+                       |
+                       v
+              Compare with DUT
+                  data_out
+                       |
+             +---------+---------+
+             |                   |
+           Match              Mismatch
+             |                   |
+             v                   v
+           PASS                FAIL
+```
+
+### PASS Condition
+
+If the expected data from the reference queue matches the DUT output:
+
+```text
+Expected Data == Actual DUT Data
+```
+
+the scoreboard increments the pass counter.
+
+```text
+pass_count++;
+```
+
+### FAIL Condition
+
+If the expected data does not match the DUT output:
+
+```text
+Expected Data != Actual DUT Data
+```
+
+the scoreboard increments the fail counter and reports an error.
+
+```text
+fail_count++;
+```
+
+### Empty Reference Queue Protection
+
+The scoreboard also checks whether the reference queue contains data before performing a read comparison.
+
+If the reference queue is empty when a valid read is observed, the scoreboard reports an error instead of attempting to remove nonexistent data.
+
+---
+
+## 7. Reference Model
+
+The reference model represents the expected FIFO behavior independently of the RTL implementation.
+
+A SystemVerilog queue is used:
+
+```text
+reference_queue[$]
+```
+
+### Write Operation
+
+For every valid write:
+
+```text
+reference_queue.push_back(data_in);
+```
+
+Example:
+
+```text
+Write 10
+Write 20
+Write 30
+```
+
+Reference queue:
+
+```text
++----+----+----+
+| 10 | 20 | 30 |
++----+----+----+
+```
+
+### Read Operation
+
+For every valid read:
+
+```text
+expected_data = reference_queue.pop_front();
+```
+
+The first value inserted is removed first.
+
+```text
++----+----+----+
+| 10 | 20 | 30 |
++----+----+----+
+  |
+  +----> Expected output = 10
+```
+
+After the read:
+
+```text
++----+----+
+| 20 | 30 |
++----+----+
+```
+
+This provides an independent model of FIFO behavior for comparison against the DUT.
+
+---
+
+## 8. Environment
+
+The environment is the main container for the verification components.
+
+It creates and connects:
+
+```text
+Generator
+Driver
+Monitor
+Scoreboard
+```
+
+It also creates the communication mailboxes:
+
+```text
+gen2drv
+mon2scb
+```
+
+Architecture:
+
+```text
+                    Environment
+                         |
+       +-----------------+-----------------+
+       |                 |                 |
+       v                 v                 v
+   Generator          Driver            Monitor
+       |                 |                 |
+       |                 |                 |
+       +---- mailbox ----+                 |
+                                           |
+                                           v
+                                       Scoreboard
+```
+
+The environment initializes the components and starts their execution using parallel processes.
+
+---
+
+## 9. Interface
+
+The SystemVerilog interface groups the FIFO signals together:
+
+```text
+clk
+rst
+wr_en
+rd_en
+din
+dout
+full
+empty
+```
+
+A virtual interface is used by the driver and monitor to communicate between the class-based verification environment and the DUT.
+
+---
+
+## Verification Flow
+
+```text
+Generator
+    |
+    | Constrained Random Transaction
+    v
+gen2drv Mailbox
+    |
+    v
+Driver
+    |
+    | FIFO Stimulus
+    v
+FIFO DUT
+    |
+    | FIFO Response
+    v
+Monitor
+    |
+    | Observed Transaction
+    v
+mon2scb Mailbox
+    |
+    v
+Scoreboard
+    |
+    v
+Reference Model
+    |
+    | Expected Data
+    v
+Compare Expected vs Actual
+    |
+    +------------+
+    |            |
+    v            v
+   PASS         FAIL
+```
+
+---
+
+## Verification Features
+
+The verification environment covers:
+
+- Write operations
+- Read operations
+- Simultaneous read/write operations
+- FIFO full condition
+- FIFO empty condition
+- Random input data
+- Random write enable
+- Random read enable
+- Consecutive operations
+- Boundary conditions
+- Reset behavior
+- Constrained-random stimulus
+
+---
+
+## Test Results
+
+| Parameter | Result |
+|-----------|--------|
+| Test Cases | 200 |
+| Successful | 200 |
+| Failed | 0 |
+| Result | 200/200 Passed |
+
+---
+
+## Tools Used
+
+- **SystemVerilog**
+- **Xilinx Vivado 2023.2**
+- Object-Oriented Programming
+- Constrained Randomization
+- Mailbox-based Inter-Process Communication
+- SystemVerilog Queue
+- Virtual Interface
+
+---
+
+## UVM-Style Architecture
+
+The project follows the fundamental architecture commonly used in UVM-based verification environments:
+
+```text
+Transaction
+     |
+Generator
+     |
+Driver
+     |
+DUT
+     |
+Monitor
+     |
+Scoreboard
+```
+
+However, the UVM library is **not used**.
+
+The components are implemented directly using SystemVerilog classes and language features.
+
+Therefore, this project can be described as:
+
+**SystemVerilog UVM-style FIFO verification environment without using the UVM library.**
+
+---
+
+## Repository Structure
+
+```text
+sync-fifo-systemverilog-verification/
+|
++-- tb/
+|   |
+|   +-- fifo_interface.sv
+|   +-- transaction.sv
+|   +-- generator.sv
+|   +-- driver.sv
+|   +-- monitor.sv
+|   +-- scoreboard.sv
+|   +-- environment.sv
+|
++-- sim/
+|
++-- README.md
+|
++-- .gitignore
+```
+
+The FIFO RTL/DUT is intentionally excluded from this repository.
+
+---
